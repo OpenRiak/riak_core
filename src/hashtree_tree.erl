@@ -193,10 +193,18 @@ new(TreeId, Opts) ->
 %% This deletes the LevelDB files for the nodes.
 -spec destroy(tree()) -> ok.
 destroy(Tree) ->
-    ets:foldl(fun({_, Node}, _) ->
-                      Node1 = hashtree:close(Node),
-                      hashtree:destroy(Node1)
-              end, undefined, Tree#hashtree_tree.nodes),
+    Nodes =
+        ets:foldl(
+            fun({_, Node}, Acc) -> [Node|Acc] end,
+            [],
+            Tree#hashtree_tree.nodes),
+    case Nodes of
+        [] ->
+            ok;
+        Nodes ->
+            ok = hashtree:close_group(Nodes),
+            ok = hashtree:destroy(hd(Nodes))
+    end,
     catch ets:delete(Tree#hashtree_tree.nodes),
     ok.
 
