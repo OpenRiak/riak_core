@@ -76,12 +76,17 @@ fresh(Node, Count) ->
 
 % @doc Return true if Va is a direct descendant of Vb, else false -- remember, a vclock is its own descendant!
 -spec descends(Va :: vclock(), Vb :: vclock()) -> boolean().
-descends(_, []) ->
+descends(A, B) ->
+    descends(A, B, false).
+
+descends(_, [], _) ->
     % all vclocks descend from the empty vclock
     true;
-descends(A, B) when length(B) > length(A) ->
+descends(A, B, _) when length(B) > length(A) ->
     false;
-descends(A, B) ->
+descends(A, B, true) ->
+    descends_sorted(A, B);
+descends(A, B, false) ->
     descends_sorted(lists:sort(A), lists:sort(B)).
 
 descends_sorted(_A, []) ->
@@ -132,7 +137,9 @@ dominates(A, B) ->
     %% and not equal(A, B). Do not "optimise" this to dodge the second
     %% descends call! I know that the laws of causality say that each
     %% actor must act serially, but Riak breaks that.
-    descends(A, B) andalso not descends(B, A).
+    AS = lists:sort(A),
+    BS = lists:sort(B),
+    descends(AS, BS, true) andalso not descends(BS, AS, true).
 
 % @doc Combine all VClocks in the input list into their least possible
 %      common descendant.
