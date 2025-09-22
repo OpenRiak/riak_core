@@ -48,10 +48,17 @@
 
 -define(LONG_TIMEOUT, 120*1000).
 
-make_name(VNodeMod,Suffix) -> list_to_atom(atom_to_list(VNodeMod)++Suffix).
-reg_name(VNodeMod) ->  make_name(VNodeMod, "_master").
+make_name(riak_kv_vnode, "_master") ->
+    riak_kv_vnode_master;
+make_name(VNodeMod, Suffix) ->
+    list_to_atom(atom_to_list(VNodeMod) ++ Suffix).
+
+reg_name(VNodeMod) -> 
+    make_name(VNodeMod, "_master").
 
 %% Given atom 'riak_kv_vnode_master', return 'riak_kv_vnode'.
+vmaster_to_vmod(riak_kv_vnode_master) ->
+    riak_kv_vnode;
 vmaster_to_vmod(VMaster) ->
     L = atom_to_list(VMaster),
     list_to_atom(lists:sublist(L,length(L)-7)).

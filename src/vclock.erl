@@ -79,13 +79,15 @@ fresh(Node, Count) ->
 descends(_, []) ->
     % all vclocks descend from the empty vclock
     true;
-descends(Va, Vb) ->
-    [{NodeB, {CtrB, _T}}|RestB] = Vb,
+descends([{Node, {CtrA, _TA}}|RestA], [{Node, {CtrB, _TB}}|RestB])
+        when CtrA >= CtrB ->
+    descends(RestA, RestB);
+descends(Va, [{NodeB, {CtrB, _T}}|RestB]) ->
     case lists:keyfind(NodeB, 1, Va) of
-        false ->
-            false;
-        {_, {CtrA, _TSA}} ->
-            (CtrA >= CtrB) andalso descends(Va,RestB)
+        {_, {CtrA, _TSA}} when CtrA >= CtrB ->
+            descends(Va, RestB);
+        _ ->
+            false
         end.
 
 %% @doc does the given `vclock()' descend from the given `dot()'. The
@@ -203,13 +205,14 @@ increment(Node, VClock) ->
 -spec increment(Node :: vclock_node(), IncTs :: timestamp(),
                 VClock :: vclock()) -> vclock().
 increment(Node, IncTs, VClock) ->
-    {{_Ctr, _TS}=C1,NewV} = case lists:keytake(Node, 1, VClock) of
-                                false ->
-                                    {{1, IncTs}, VClock};
-                                {value, {_N, {C, _T}}, ModV} ->
-                                    {{C + 1, IncTs}, ModV}
-                            end,
-    [{Node,C1}|NewV].
+    {{_Ctr, _TS}=C1,NewV} =
+        case lists:keytake(Node, 1, VClock) of
+            false ->
+                {{1, IncTs}, VClock};
+            {value, {_N, {C, _T}}, ModV} ->
+                {{C + 1, IncTs}, ModV}
+        end,
+    lists:sort([{Node,C1}|NewV]).
 
 
 % @doc Return the list of all nodes that have ever incremented VClock.
