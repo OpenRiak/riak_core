@@ -79,16 +79,21 @@ fresh(Node, Count) ->
 descends(_, []) ->
     % all vclocks descend from the empty vclock
     true;
-descends([{Node, {CtrA, _TA}}|RestA], [{Node, {CtrB, _TB}}|RestB])
+descends(A, B) when length(B) > length(A) ->
+    false;
+descends(A, B) ->
+    descends_sorted(lists:sort(A), lists:sort(B)).
+
+descends_sorted(_A, []) ->
+    true;
+descends_sorted([{Node, {CtrA, _TA}}|RestA], [{Node, {CtrB, _TB}}|RestB])
         when CtrA >= CtrB ->
-    descends(RestA, RestB);
-descends(Va, [{NodeB, {CtrB, _T}}|RestB]) ->
-    case lists:keyfind(NodeB, 1, Va) of
-        {_, {CtrA, _TSA}} when CtrA >= CtrB ->
-            descends(Va, RestB);
-        _ ->
-            false
-        end.
+    descends_sorted(RestA, RestB);
+descends_sorted([{NodeA, {_CtrA, _TA}}|RestA], [{NodeB, {CtrB, TB}}|RestB])
+        when NodeA < NodeB ->
+    descends_sorted(RestA, [{NodeB, {CtrB, TB}}|RestB]);
+descends_sorted(_A, _B) ->
+    false.
 
 %% @doc does the given `vclock()' descend from the given `dot()'. The
 %% `dot()' can be any vclock entry returned from
