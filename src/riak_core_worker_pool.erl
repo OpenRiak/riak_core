@@ -52,7 +52,8 @@
         terminate/3, code_change/4]).
 
 -export([start_link/3, handle_work/3,
-         get_worker_pool_size/1, set_worker_pool_size/2,
+         get_worker_pool_size/1,
+         set_worker_pool_size/2, set_worker_pool_size/3,
          stop/2, shutdown_pool/2]).
 
 %% gen_fsm states
@@ -106,6 +107,8 @@ get_worker_pool_size(Pid) ->
 
 set_worker_pool_size(Pid, NewSize) ->
     gen_fsm:sync_send_all_state_event(Pid, {set_pool_size, NewSize}).
+set_worker_pool_size(Pid, NewSize, NewOverflow) ->
+    gen_fsm:sync_send_all_state_event(Pid, {set_pool_size, NewSize, NewOverflow}).
 
 stop(Pid, Reason) ->
     gen_fsm:sync_send_all_state_event(Pid, {stop, Reason}).
@@ -242,6 +245,9 @@ handle_sync_event(get_pool_size, _From, StateName, State = #state{pool = Pid}) -
     {reply, Res, StateName, State};
 handle_sync_event({set_pool_size, NewSize}, _From, StateName, State = #state{pool = Pid}) ->
     ok = poolboy:set_pool_size(Pid, NewSize),
+    {reply, ok, StateName, State};
+handle_sync_event({set_pool_size, NewSize, NewOverflow}, _From, StateName, State = #state{pool = Pid}) ->
+    ok = poolboy:set_pool_size(Pid, NewSize, NewOverflow),
     {reply, ok, StateName, State};
 handle_sync_event(_Event, _From, StateName, State) ->
     {reply, {error, unknown_message}, StateName, State}.
