@@ -278,7 +278,9 @@ prune_vclock1(V,Now,BProps,HeadTime) ->
         false -> V
     end.
 
-get_property(Key, PairList) ->
+get_property(Key, PropertyMap) when is_map(PropertyMap) ->
+    maps:get(Key, PropertyMap);
+get_property(Key, PairList) when is_list(PairList) ->
     case lists:keyfind(Key, 1, PairList) of
       {_Key, Value} ->
         Value;
