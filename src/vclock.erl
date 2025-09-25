@@ -447,4 +447,59 @@ valid_entry_test() ->
     ?assertNot(valid_dot("huffle-puff")),
     ?assertNot(valid_dot([])).
 
+vclock_dominates_speed_test() ->
+    %% used for speed comparison with previous descends function
+    %% Running this test on an M1 macbook (clocks length of 16)
+    %% - previous 14ms
+    %% - this 7 ms
+    %% 
+    %% Using larger vclocks (length of 32)
+    %% - previous 47ms
+    %% - this 14 ms
+    %% 
+    %% Appears to have the quality of being faster, but also scaling linearly
+    %% 
+    %% For the minimum size (assuming some mutation and n=3) i.e 3 - the two
+    %% versions have the same performance
+    ClockSize = 16,
+    N1 = 'node1@127.0.0.1',
+    N2 = 'node2@127.0.0.1',
+    N3 = 'node3@127.0.0.1',
+    VnodeIDs =
+        lists:map(
+            fun(I) ->
+                Node = erlang:crc32(term_to_binary(lists:nth((I rem 3) + 1, [N1, N2, N3]))),
+                VNID = I bsl 16,
+                <<Node:32/integer, VNID:32/integer>>
+            end,
+            lists:seq(1, ClockSize)
+        ),
+    VCA =
+        lists:foldl(
+            fun(VID, Acc) ->
+                increment(VID, Acc)
+            end,
+            vclock:fresh(),
+            VnodeIDs
+        ),
+    VCB = increment(hd(VnodeIDs), VCA),
+    VCC = increment(lists:last(VnodeIDs), VCA),
+    VCAsort = lists:sort(VCA),
+    VCBsort = lists:sort(VCB),
+    VCCsort = lists:sort(VCC),
+    
+    SpeedTestFun =
+        fun(_I) ->
+            ?assert(dominates(VCB, VCA)),
+            ?assert(dominates(VCC, VCA)),
+            ?assert(dominates(VCBsort, VCAsort)),
+            ?assert(dominates(VCCsort, VCAsort)),
+            ?assert(not dominates(VCA, VCB))
+        end,
+    io:format(
+        user,
+        "Speed test result ~w~n",
+        [timer:tc(fun() -> lists:foreach(SpeedTestFun, lists:seq(1,1000)) end)]
+    ).
+
 -endif.
