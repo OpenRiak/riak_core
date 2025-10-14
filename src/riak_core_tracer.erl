@@ -107,7 +107,7 @@ handle_call({filter, MFs, Filter}, _From, State) ->
 handle_call({collect, Duration, Nodes}, _From, State) ->
     cancel_timer(State#state.stop_tref),
     Tref = timer:send_after(Duration, collect_timeout),
-    dbg:stop_clear(),
+    stop_clear(),
     dbg:tracer(process, {fun ({trace, _, call, {?MODULE, trigger_sentinel, _}}, Pid) ->
                                  gen_server:cast(Pid, stop_sentinel),
                                  Pid;
@@ -161,7 +161,7 @@ handle_call(stop, _From, State) ->
     {stop, normal, ok, State}.
 
 handle_cast(stop_sentinel, State) ->
-    dbg:stop_clear(),
+    stop_clear(),
     case State#state.stop_from of
         undefined ->
             ok;
@@ -215,3 +215,11 @@ zero_ts(Offset, [{Ts,Trace}|Rest], Acc) ->
 
 trigger_sentinel() ->
     ok.
+
+-if(?OTP_RELEASE >= 25).
+stop_clear() ->
+    dbg:stop().
+-else.
+stop_clear() ->
+    dbg:stop_clear().
+-endif.
