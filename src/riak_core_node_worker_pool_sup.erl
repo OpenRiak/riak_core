@@ -39,9 +39,9 @@ init([]) ->
     {ok, {{one_for_one, 5, 10}, []}}.
 
 %% @doc
-%% Start a node_worker_pool - can be either assuredforwardng_pool or
-%% a besteffort_pool (which will also be registered as a node_worker_pool for
-%% backwards compatability)
+%% Start a node_worker_pool - can be either assured forwarding pool or
+%% a best effort_pool (which will also be registered as a node_worker_pool for
+%% backwards compatibility)
 -spec start_pool(atom(), pos_integer(), list(), list(), worker_pool()) ->
                         ok | {error, Reason::term()}.
 start_pool(WorkerMod, PoolSize, WorkerArgs, WorkerProps, QueueType) ->
@@ -99,6 +99,19 @@ hard_reset_dscp_pool(AF1, AF2, AF3, AF4, BE) ->
                     whereis(riak_core_node_worker_pool_sup),
                     kill
                 ),
+            true =
+                wait_until(
+                    fun() ->
+                        case whereis(riak_core_node_worker_pool_sup) of
+                            undefined ->
+                                false;
+                            Pid when is_pid(Pid) ->
+                                is_process_alive(Pid)
+                        end
+                    end,
+                    1,
+                    10
+                ),
             lists:foreach(
                 fun({PoolName, PoolSize}) ->
                     riak_core_node_worker_pool_sup:start_pool(
@@ -124,4 +137,19 @@ hard_reset_dscp_pool(AF1, AF2, AF3, AF4, BE) ->
         false ->
             ?LOG_ERROR("Pool state not expected for DSCP Pool ~0p", [PoolMap]),
             {error, unexpected_state}
+    end.
+
+-spec wait_until(
+    fun(() -> boolean()), pos_integer(), non_neg_integer()
+) -> 
+    boolean().
+wait_until(_Fun, _Delay, 0) ->
+    false;
+wait_until(Fun, Delay, Count) ->
+    case Fun() of
+        true ->
+            true;
+        _ ->
+            timer:sleep(Delay),
+            wait_until(Fun, Delay, Count - 1)
     end.
