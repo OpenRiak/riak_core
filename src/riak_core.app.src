@@ -18,7 +18,6 @@
                   riak_sysmon,
                   os_mon,
                   eleveldb,
-                  pbkdf2,
                   poolboy,
                   exometer_core,
                   clique,
