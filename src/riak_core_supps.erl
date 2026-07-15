@@ -55,6 +55,7 @@ sups() ->
      riak_kv_sup,
      riak_repl_sup,
      riak_api_sup,
+     riak_admin_api_sup,
      riak_pipe_sup
     ].
 
