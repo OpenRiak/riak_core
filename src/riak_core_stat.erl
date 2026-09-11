@@ -35,7 +35,7 @@
     register_stats/0, register_stats/2,
     register_vnode_stats/3, unregister_vnode_stats/2,
     start_link/0,
-    update/1
+    update/1, update/2
 ]).
 
 %% exometer callbacks
@@ -136,6 +136,9 @@ get_stats(App) ->
 update(Arg) ->
     gen_server:cast(?SERVER, {update, Arg}).
 
+update(Arg, Value) ->
+    gen_server:cast(?SERVER, {update, Arg, Value}).
+
 prefix() ->
     app_helper:get_env(riak_core, stat_prefix, riak).
 
@@ -163,6 +166,14 @@ handle_cast({update, {worker_pool, Pool}}, State) ->
 handle_cast({update, Arg}, State) ->
     exometer_update([prefix(), ?APP, update_metric(Arg)], update_value(Arg)),
     {noreply, State};
+handle_cast({update, Arg, Value}, State) ->
+    case exometer:update([prefix(), ?APP, update_metric(Arg)], update_value(Value)) of
+        {error, not_found} ->
+            lager:debug("~p not found on update.", [Arg]);
+        ok ->
+            ok
+    end,
+    {noreply, State};
 handle_cast(_Req, State) ->
     {noreply, State}.
 
@@ -186,21 +197,99 @@ update_value(converge_timer_begin ) -> timer_start;
 update_value(rebalance_timer_begin) -> timer_start;
 update_value(converge_timer_end   ) -> timer_end;
 update_value(rebalance_timer_end  ) -> timer_end;
+update_value(Num) when is_number(Num) -> Num;
 update_value(_) -> 1.
 
 %% private
 stats() ->
     [{ignored_gossip_total, counter, [], [{value, ignored_gossip_total}]},
-     {rings_reconciled, spiral, [], [{count, rings_reconciled_total},
+        {rings_reconciled, spiral, [], [{count, rings_reconciled_total},
                                      {one, rings_reconciled}]},
-     {ring_creation_size,
-      {function, app_helper, get_env, [riak_core, ring_creation_size],
-       match, value}, [], [{value, ring_creation_size}]},
-     {gossip_received, spiral, [], [{one, gossip_received}]},
-     {rejected_handoffs, counter, [], [{value, rejected_handoffs}]},
-     {handoff_timeouts, counter, [], [{value, handoff_timeouts}]},
-     {dropped_vnode_requests, counter, [], [{value, dropped_vnode_requests_total}]},
-     {converge_delay, duration, [], [{mean, converge_delay_mean},
+        {ring_creation_size,
+            {function, app_helper, get_env, [riak_core, ring_creation_size],
+                match, value}, [], [{value, ring_creation_size}]},
+        {gossip_received, spiral, [], [{one, gossip_received}]},
+        {rejected_handoffs, counter, [], [{value, rejected_handoffs}]},
+        {handoff_timeouts, counter, [], [{value, handoff_timeouts}]},
+
+        {hinted_handoff_inbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [inbound, hinted],
+                match, value
+            },
+            [], [{value, hinted_handoff_inbound_active_transfers}]
+        },
+        {ownership_handoff_inbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [inbound, ownership],
+                match, value
+            },
+            [], [{value, ownership_handoff_inbound_active_transfers}]
+        },
+        {repair_handoff_inbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [inbound, repair],
+                match, value
+            },
+            [], [{value, repair_handoff_inbound_active_transfers}]
+        },
+        {resize_handoff_inbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [inbound, resize],
+                match, value
+            },
+            [], [{value, resize_handoff_inbound_active_transfers}]
+        },
+
+        {hinted_handoff_outbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [outbound, hinted],
+                match, value
+            },
+            [], [{value, hinted_handoff_outbound_active_transfers}]
+        },
+        {ownership_handoff_outbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [outbound, ownership],
+                match, value
+            },
+            [], [{value, ownership_handoff_outbound_active_transfers}]
+        },
+        {repair_handoff_outbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [outbound, repair],
+                match, value
+            },
+            [], [{value, repair_handoff_outbound_active_transfers}]
+        },
+        {resize_handoff_outbound_active_transfers,
+            {function,
+                riak_core_handoff_manager, get_num_transfers, [outbound, resize],
+                match, value
+            },
+            [], [{value, resize_handoff_outbound_active_transfers}]
+        },
+
+        {hinted_handoff_objects_sent,       counter, [], [{value, hinted_handoff_objects_sent}]},
+        {ownership_handoff_objects_sent,    counter, [], [{value, ownership_handoff_objects_sent}]},
+        {repair_handoff_objects_sent,       counter, [], [{value, repair_handoff_objects_sent}]},
+        {resize_handoff_objects_sent,       counter, [], [{value, resize_handoff_objects_sent}]},
+        {hinted_handoff_bytes_sent,         counter, [], [{value, hinted_handoff_bytes_sent}]},
+        {ownership_handoff_bytes_sent,      counter, [], [{value, ownership_handoff_bytes_sent}]},
+        {repair_handoff_bytes_sent,         counter, [], [{value, repair_handoff_bytes_sent}]},
+        {resize_handoff_bytes_sent,         counter, [], [{value, resize_handoff_bytes_sent}]},
+
+        {handoff_acksync_wait, histogram, [], [
+            {min   , handoff_acksync_wait_min},
+            {mean  , handoff_acksync_wait_mean},
+            {median, handoff_acksync_wait_median},
+            {95    , handoff_acksync_wait_95},
+            {99    , handoff_acksync_wait_99},
+            {max   , handoff_acksync_wait_max}]
+        },
+
+        {dropped_vnode_requests, counter, [], [{value, dropped_vnode_requests_total}]},
+        {converge_delay, duration, [], [{mean, converge_delay_mean},
                                      {min, converge_delay_min},
                                      {max, converge_delay_max},
                                      {last, converge_delay_last}]},

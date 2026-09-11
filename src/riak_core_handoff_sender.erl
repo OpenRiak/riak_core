@@ -1,6 +1,7 @@
 %% -------------------------------------------------------------------
 %%
 %% Copyright (c) 2007-2012 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2018-2022 Workday, Inc.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -289,7 +290,7 @@ start_fold(TargetNode, Module, {Type, Opts}, ParentPid, SslOpts) ->
                 {SrcPartition, SrcNode}, Req, VMaster, infinity),
 
         %% Send any straggler entries remaining in the buffer:
-        AccRecord = send_objects(AccRecord0#ho_acc.item_queue, AccRecord0),
+        AccRecord = send_objects(AccRecord0#ho_acc.item_queue, AccRecord0, true),
 
         if AccRecord == {error, vnode_shutdown} ->
                 ?log_info("because the local vnode was shutdown", []),
@@ -320,23 +321,28 @@ start_fold(TargetNode, Module, {Type, Opts}, ParentPid, SslOpts) ->
                 ?LOG_DEBUG(
                     "~p ~p Sending final sync",
                     [SrcPartition, Module]),
-                case send_sync(TcpMod, Socket, RecvTimeout) of
-                    ok ->
-                        ok;
-                    {error, DirectionE, timeout} -> 
-                        ?LOG_ERROR(
-                            "Final sync message returned ~w error timeout "
-                            "between src_partition=~p trg_partition=~p "
-                            "type=~w module=~w ",
-                            [
-                                DirectionE,
-                                SrcPartition,
-                                TargetPartition,
-                                Type,
-                                Module
-                            ]
-                        ),
-                        exit({shutdown, timeout})
+                StartUs = current_us(),
+                try
+                    case send_sync(TcpMod, Socket, RecvTimeout) of
+                        ok ->
+                            ok;
+                        {error, DirectionE, timeout} -> 
+                            ?LOG_ERROR(
+                                "Final sync message returned ~w error timeout "
+                                "between src_partition=~p trg_partition=~p "
+                                "type=~w module=~w ",
+                                [
+                                    DirectionE,
+                                    SrcPartition,
+                                    TargetPartition,
+                                    Type,
+                                    Module
+                                ]
+                            ),
+                            exit({shutdown, timeout})
+                    end
+                after
+                    riak_core_stat:update(handoff_acksync_wait, current_us() - StartUs)
                 end,
 
                 FoldTimeDiff = end_fold_time(StartFoldTime),
@@ -547,10 +553,12 @@ maybe_keepalive_receiver(Acc = #ho_acc{keepalive_next=NextKeepalive}) ->
             Acc
     end.
 
-send_objects([], Acc) ->
-    Acc;
 send_objects(ItemsReverseList, Acc) ->
+    send_objects(ItemsReverseList, Acc, false).
 
+send_objects([], Acc, _FlushStats) ->
+    Acc;
+send_objects(ItemsReverseList, Acc, FlushStats) ->
     Items = lists:reverse(ItemsReverseList),
 
     #ho_acc{ack=Ack,
@@ -622,28 +630,32 @@ send_objects(ItemsReverseList, Acc) ->
 
     NumBytes = byte_size(M),
     Stats2 = incr_bytes(incr_objs(Stats, NObjects), NumBytes),
-    Stats3 =
-        maybe_send_status({Module, SrcPartition, TargetPartition}, Stats2),
 
-    case TcpMod:send(Socket, M) of
-        ok ->
-            Acc0#ho_acc{ack=Ack+1, error=ok, stats=Stats3,
-                       total_objects=TotalObjects+BatchCount,
-                       total_bytes=TotalBytes+NumBytes,
-                       keepalive_next=next_keepalive_time(),
-                       item_queue=[],
-                       item_queue_length=0,
-                       item_queue_byte_size=0};
-        {error, SendFailure} ->
-            ?LOG_ERROR(
-                "Send batch returned error ~w "
-                "between src_partition=~p trg_partition=~p "
-                "type=~w module=~w ",
-                [SendFailure,
-                    SrcPartition, TargetPartition,
-                    Type, Module]
-            ),
-            throw_error(Acc0#ho_acc{stats=Stats3}, {error, SendFailure})
+    StartUs = current_us(),
+    try
+        case TcpMod:send(Socket, M) of
+            ok ->
+                Stats3 = maybe_send_status({Module, SrcPartition, TargetPartition}, Stats2, FlushStats),
+                Acc0#ho_acc{ack=Ack+1, error=ok, stats=Stats3,
+                           total_objects=TotalObjects+BatchCount,
+                           total_bytes=TotalBytes+NumBytes,
+                           keepalive_next=next_keepalive_time(),
+                           item_queue=[],
+                           item_queue_length=0,
+                           item_queue_byte_size=0};
+            {error, SendFailure} ->
+                ?LOG_ERROR(
+                  "Send batch returned error ~w "
+                  "between src_partition=~p trg_partition=~p "
+                  "type=~w module=~w ",
+                  [SendFailure,
+                       SrcPartition, TargetPartition,
+                       Type, Module]
+                 ),
+                throw_error(Acc0#ho_acc{stats=Stats2}, {error, SendFailure})
+        end
+    after
+        riak_core_stat:update(handoff_acksync_wait, current_us() - StartUs)
     end.
 
 -spec throw_error(ho_acc(), {error, term()}) -> ok.
@@ -761,11 +773,10 @@ incr_objs(Stats=#ho_stats{objs=Objs}, NObjs) ->
 %% @doc Check if the interval has elapsed and if so send handoff stats
 %%      for `ModSrcTgt' to the manager and return a new stats record
 %%      `NetStats'.
--spec maybe_send_status({module(), non_neg_integer(), non_neg_integer()},
-                        ho_stats()) ->
-                               NewStats::ho_stats().
-maybe_send_status(ModSrcTgt, Stats=#ho_stats{interval_end=IntervalEnd}) ->
-    case is_elapsed(IntervalEnd) of
+-spec maybe_send_status({module(), non_neg_integer(), non_neg_integer()}, ho_stats(), boolean()) ->
+    NewStats::ho_stats().
+maybe_send_status(ModSrcTgt, Stats=#ho_stats{interval_end=IntervalEnd}, FlushStats) ->
+    case FlushStats orelse is_elapsed(IntervalEnd) of
         true ->
             Stats2 = Stats#ho_stats{last_update=os:timestamp()},
             riak_core_handoff_manager:status_update(ModSrcTgt, Stats2),
@@ -852,3 +863,7 @@ maybe_call_handoff_started(Module, SrcPartition) ->
             %% additional fold options
             []
     end.
+
+current_us() ->
+    {MegaSecs, Secs, MicroSecs} = os:timestamp(),
+    MegaSecs*1000000000000 + Secs*1000000 + MicroSecs.
