@@ -19,14 +19,23 @@
 -module('riak_core_vnode').
 -behaviour(gen_fsm).
 
--compile({nowarn_deprecated_function, 
-            [{gen_fsm, start_link, 3},
-                {gen_fsm, send_event, 2},
-                {gen_fsm, send_event_after, 2},
-                {gen_fsm, sync_send_event, 3},
-                {gen_fsm, send_all_state_event, 2},
-                {gen_fsm, sync_send_all_state_event, 2},
-                {gen_fsm, cancel_timer, 1}]}).
+-compile([{nowarn_deprecated_function,
+           [{gen_fsm, start_link, 3},
+            {gen_fsm, init, 1},
+            {gen_fsm, terminate, 3},
+            {gen_fsm, send_event, 2},
+            {gen_fsm, send_event_after, 2},
+            {gen_fsm, sync_send_event, 3},
+            {gen_fsm, send_all_state_event, 2},
+            {gen_fsm, sync_send_all_state_event, 2},
+            {gen_fsm, cancel_timer, 1},
+            {gen_fsm, code_change, 4},
+            {gen_fsm, handle_event, 3},
+            {gen_fsm, handle_info, 3},
+            {gen_fsm, handle_sync_event, 4}]
+          },
+          nowarn_deprecated_callback
+         ]).
 
 -include("riak_core_vnode.hrl").
 -export([start_link/3,
