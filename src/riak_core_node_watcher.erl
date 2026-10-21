@@ -229,6 +229,19 @@ handle_call({service_up, Id, Pid, MFA, Options}, From, State) ->
 
     {reply, ok, State2#state{health_checks = Healths}};
 
+handle_call({service_down, Id, health_check}, _From, State) ->
+    Healths = case orddict:find(Id, State#state.health_checks) of
+                  error ->
+                      State#state.health_checks;
+                  {ok, Check} ->
+                      Failures = max(Check#health_check.health_failures,
+                                     Check#health_check.max_health_failures),
+                      Check2 = discard_in_flight_check(
+                                 Id, Check#health_check{health_failures = Failures}),
+                      orddict:store(Id, Check2, State#state.health_checks)
+              end,
+    {reply, ok, drop_service(Id, State#state{health_checks = Healths})};
+
 handle_call({service_down, Id}, _From, State) ->
     %% Remove health check if any
     S2 = remove_health_check(Id, State),
@@ -633,6 +646,18 @@ remove_health_check(ServiceId, State) ->
     end,
     State#state{health_checks = Healths2}.
 
+%% A check started before the service was forced down must not bring it
+%% back up, so its result is ignored and a fresh check is scheduled.
+discard_in_flight_check(Service, #health_check{state = checking} = Check) ->
+    #health_check{checking_pid = Pid, health_failures = N,
+                  check_interval = V} = Check,
+    erlang:erase(Pid),
+    Check#health_check{state = waiting,
+                       checking_pid = undefined,
+                       interval_tref = next_health_tref(N, V, Service)};
+discard_in_flight_check(_Service, Check) ->
+    Check.
+
 %% health checks are an fsm to make mental modeling easier.
 %% There are 3 states:
 %% waiting:  in between check intervals
@@ -798,3 +823,81 @@ determine_time(Failures, BaseInterval) when Failures < 11 ->
 
 determine_time(Failures, BaseInterval) when Failures > 10 ->
     BaseInterval * 20.
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+spawn_service() ->
+    spawn(fun() -> receive stop -> ok end end).
+
+health_check_down_recovers_test() ->
+    ServicePid = spawn_service(),
+    Check = #health_check{service_pid = ServicePid, max_health_failures = 3,
+                          check_interval = infinity},
+    %% Keep the node down to isolate service transitions from ETS/broadcasts.
+    State = add_service(test_service, ServicePid,
+                        #state{status = down,
+                               health_checks = [{test_service, Check}]}),
+    try
+        {reply, ok, Down} = handle_call({service_down, test_service, health_check},
+                                        ignored, State),
+        ?assertEqual([], Down#state.services),
+        {ok, FailedCheck} = orddict:find(test_service, Down#state.health_checks),
+        ?assertEqual(Check#health_check{health_failures = 3}, FailedCheck),
+        Checking = FailedCheck#health_check{state = checking, checking_pid = self()},
+        {up, RecoveredCheck} = health_fsm({result, self(), true}, test_service, Checking),
+        Recovered = handle_check_return({up, RecoveredCheck}, test_service, Down),
+        ?assertEqual([test_service], Recovered#state.services),
+        ?assertEqual(0, RecoveredCheck#health_check.health_failures)
+    after
+        delete_service_mref(test_service),
+        exit(ServicePid, kill)
+    end.
+
+health_check_down_preserves_failure_count_test() ->
+    Check = #health_check{health_failures = 5, max_health_failures = 3,
+                          check_interval = infinity},
+    State = #state{status = down, health_checks = [{test_service, Check}]},
+    {reply, ok, Next} = handle_call({service_down, test_service, health_check},
+                                    ignored, State),
+    ?assertEqual(State#state.health_checks, Next#state.health_checks).
+
+health_check_down_discards_in_flight_check_test() ->
+    CheckPid = self(),
+    erlang:put(CheckPid, test_service),
+    Check = #health_check{state = checking, checking_pid = CheckPid,
+                          max_health_failures = 1, check_interval = 60000},
+    State = #state{status = down, health_checks = [{test_service, Check}]},
+    {reply, ok, Down} = handle_call({service_down, test_service, health_check},
+                                    ignored, State),
+    {ok, C} = orddict:find(test_service, Down#state.health_checks),
+    try
+        ?assertEqual(waiting, C#health_check.state),
+        ?assertEqual(undefined, C#health_check.checking_pid),
+        ?assertNotEqual(undefined, C#health_check.interval_tref),
+        ?assertEqual(undefined, erlang:get(CheckPid)),
+        %% Node up so a late result would be processed if not discarded.
+        {noreply, After} = handle_cast({health_check_result, CheckPid, true},
+                                       Down#state{status = up}),
+        ?assertEqual([], After#state.services),
+        ?assertEqual(Down#state.health_checks, After#state.health_checks)
+    after
+        erlang:erase(CheckPid),
+        erlang:cancel_timer(C#health_check.interval_tref)
+    end.
+
+health_check_down_without_check_test() ->
+    ServicePid = spawn_service(),
+    State = add_service(test_service, ServicePid, #state{status = down}),
+    try
+        {reply, ok, Next} = handle_call({service_down, test_service, health_check},
+                                        ignored, State),
+        ?assertEqual([], Next#state.services),
+        ?assertEqual([], Next#state.health_checks),
+        ?assertEqual(undefined, erlang:get(test_service))
+    after
+        delete_service_mref(test_service),
+        exit(ServicePid, kill)
+    end.
+-endif.
