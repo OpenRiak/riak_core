@@ -212,12 +212,11 @@ init_state(Registered) ->
 
 handle_call({register, Capability, Info}, _From, State) ->
     State2 = register_capability(node(), Capability, Info, State),
-    State3 = update_supported(State2),
-    State4 = renegotiate_capabilities(State3),
-    publish_supported(State4),
-    update_local_cache(State4),
-    save_registered(State4#state.registered),
-    {reply, ok, State4}.
+    State3 = update_supported(State2),  %% also renegotiate
+    publish_supported(State3),
+    update_local_cache(State3),
+    save_registered(State3#state.registered),
+    {reply, ok, State3}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -361,8 +360,23 @@ add_node(Node, [], State=#state{unknown=Unknown}) ->
                end,
     State2 = State#state{unknown=Unknown2},
     add_node_capabilities(Node, Capabilities, State2);
-add_node(Node, Capabilities, State) ->
-    add_node_capabilities(Node, Capabilities, State).
+add_node(Node, Capabilities, State1) ->
+    State2 = add_node_capabilities(Node, Capabilities, State1),
+    filter_removed_caps(Node, Capabilities, State2).
+
+%% Remove supported capabilities for a node where it no longer appears in the
+%% rings capabilities for the node.
+%%
+%% This can occur when another node downgrades to a version where the capability
+%% is not declared. We must remove it from our local copy of its supported modes
+%% so that the default value can be used.
+filter_removed_caps(Node, Capabilities, State1) ->
+    NodeSupported = lists:filter(
+        fun({CapName, _}) ->
+            lists:keymember(CapName, 1, Capabilities)
+        end, get_supported(Node, State1)),
+    Supported = orddict:store(Node, NodeSupported, State1#state.supported),
+    State1#state{ supported = Supported }.
 
 add_node_capabilities(Node, Capabilities, State) ->
     lists:foldl(fun({Capability, Supported}, StateAcc) ->
@@ -666,5 +680,92 @@ basic_test() ->
                                 S7),
     ?assertEqual([{{riak_core, test}, x}], S8#state.negotiated),
     ok.
+
+-define(CAP, {riak_core, cap}).
+-define(OTHER_CAP, {riak_core, other_cap}).
+-define(NO_OVERRIDES, [{riak_core, []}]).
+
+use_preferred_when_only_node_test() ->
+    S1 = init_state([]),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, []), S1),
+    S3 = negotiate_capabilities(node1, ?NO_OVERRIDES, S2),
+    ?assertEqual([{?CAP, x}], S3#state.negotiated).
+
+%% both nodes have the same capability, choose the most preferred cap that they
+%% both support
+negotiate_with_other_node_test() ->
+    S1 = init_state([]),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, undefined), S1),
+    S3 = add_node(node2, [{?CAP, [a,b,c,y]}], S2),
+    S4 = negotiate_capabilities(node1, ?NO_OVERRIDES, S3),
+    ?assertEqual([{?CAP, a}], S4#state.negotiated).
+
+%% when the other node does not have a registered capability, use the default
+%% value instead of the preferred
+use_default_when_other_node_does_not_have_cap_test() ->
+    S1 = init_state([]),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, undefined), S1),
+    S3 = add_node(node2, [{?OTHER_CAP, [a,b,c,y]}], S2),
+    S4 = negotiate_capabilities(node1, ?NO_OVERRIDES, S3),
+    ?assertEqual([{?CAP, y}], S4#state.negotiated).
+
+%% when the other node does not have any registered capabilities, use the
+%% default value instead of the preferred.
+use_default_when_other_node_missing_cap_with_empty_caps_test() ->
+    NoCaps = [],
+    S1 = init_state([]),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, undefined), S1),
+    S3 = add_node(node2, NoCaps, S2),
+    S4 = negotiate_capabilities(node1, ?NO_OVERRIDES, S3),
+    ?assertEqual([{?CAP, y}], S4#state.negotiated).
+
+%% two nodes agree on a cap the third hasn't registered it so the default is
+%% used
+use_default_when_just_one_other_node_does_not_have_cap_test() ->
+    S1 = init_state([]),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, undefined), S1),
+    S3 = add_node(node2, [{?OTHER_CAP, [a,b,c,y]}], S2),
+    S4 = add_node(node3, [{?CAP, [x,a,c,y]}], S3),
+    S5 = negotiate_capabilities(node1, ?NO_OVERRIDES, S4),
+    ?assertEqual([{?CAP, y}], S5#state.negotiated).
+
+%% add a node with the registered cap, agreeing on the modes, then add it again
+%% with the cap removed, the default value should be used.
+revert_to_default_value_when_other_node_removes_cap_test() ->
+    S1 = init_state([]),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, undefined), S1),
+    S3 = add_node(node2, [{?CAP, [x,a,c,y]}, {?OTHER_CAP, [a,b,c,y]}], S2),
+    S4 = negotiate_capabilities(node1, ?NO_OVERRIDES, S3),
+    S5 = add_node(node2, [{?OTHER_CAP, [a,b,c,y]}], S4),
+    S6 = negotiate_capabilities(node1, ?NO_OVERRIDES, S5),
+    ?assertEqual([{?CAP, y}], S6#state.negotiated).
+
+%% when a legacy mapping is specified and node2 does not specify caps then use
+%% the rpc_fn call into the other nodes riak_core application env configuration.
+%% This is stubbed and always returns mapping_key, mapping_key is the key to `a`
+%% in the legacy mapping which is a supported mode in node1 and so is the
+%% negotiated capability value.
+use_legacy_mapping_when_specified_and_node_has_no_caps_test() ->
+    S1 = init_state([]),
+    meck:new(riak_core_util, [passthrough]),
+    meck:expect(riak_core_util, safe_rpc, fun(node2, application, get_env, [riak_core, cap]) -> {ok, mapping_key} end),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, {riak_core, cap, [{mapping_key, a}]}), S1),
+    S3 = add_node(node2, [], S2),
+    S4 = negotiate_capabilities(node1, ?NO_OVERRIDES, S3),
+    ?assertEqual([{?CAP, a}], S4#state.negotiated),
+    ?assert(meck:validate(riak_core_util)),
+    meck:unload(riak_core_util).
+
+%% when the other node has capabilities, then the legacy mapping is not used.
+%% assert that riak_core_util:safe_rpc is not called.
+legacy_mapping_not_used_when_node2_has_caps_even_when_specified_test() ->
+    S1 = init_state([]),
+    meck:new(riak_core_util, [passthrough]),
+    S2 = register_capability(node1, ?CAP, capability_info([x,a,c,y], y, {riak_core, cap, [{mapping_key, a}]}), S1),
+    S3 = add_node(node2, [{?CAP, [c,y]}], S2),
+    S4 = negotiate_capabilities(node1, ?NO_OVERRIDES, S3),
+    ?assertEqual([{?CAP, c}], S4#state.negotiated),
+    ?assert(not meck:called(riak_core_util, safe_rpc, ['_', '_', '_', '_'])),
+    meck:unload(riak_core_util).
 
 -endif.
