@@ -33,7 +33,6 @@
          suspend_health_checks/0,
          resume_health_checks/0,
          service_down/1,
-         service_down/2,
          node_up/0,
          node_down/0,
          services/0, services/1,
@@ -133,11 +132,6 @@ resume_health_checks() ->
 
 service_down(Id) ->
     gen_server:call(?MODULE, {service_down, Id}, infinity).
-
-service_down(Id, true) ->
-    gen_server:call(?MODULE, {service_down, Id, health_check}, infinity);
-service_down(Id, false) ->
-    service_down(Id).
 
 node_up() ->
     gen_server:call(?MODULE, {node_status, up}, infinity).
